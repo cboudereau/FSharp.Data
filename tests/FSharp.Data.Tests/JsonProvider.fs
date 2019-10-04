@@ -17,6 +17,30 @@ open FSharp.Data.Runtime.BaseTypes
 type NumericFields = JsonProvider<""" [ {"a":12.3}, {"a":1.23, "b":1999.0} ] """, SampleIsList=true>
 type DecimalFields = JsonProvider<""" [ {"a":9999999999999999999999999999999999.3}, {"a":1.23, "b":1999.0} ] """, SampleIsList=true>
 
+module Clem = 
+    open FSharp.Data.Runtime.StructuralTypes
+    let [<Test>] ``clem test``()=
+        let map = Map.ofList
+        let x =
+            InferedType.Record (Some "child",
+                 [{Name = "id";
+                   Type = InferedType.Primitive (typeof<System.Int32>,None,false);};
+                  {Name = "children";
+                   Type =
+                    InferedType.Collection
+                      ([InferedTypeTag.Record (Some "child")],
+                           map
+                             [(InferedTypeTag.Record (Some "child"),
+                               (Single,
+                                InferedType.Record
+                                  (Some "child",
+                                   [{Name = "id";
+                                     Type = InferedType.Primitive (typeof<System.Int32>,None,false);};
+                                    {Name = "children";
+                                     Type = InferedType.Collection ([],map []);}],false)))]);}],false)
+
+        x |> ignore
+
 [<Test>]
 let ``Decimal required field is read correctly`` () = 
   let prov = NumericFields.Parse(""" {"a":123} """)

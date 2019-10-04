@@ -1,4 +1,4 @@
-﻿// --------------------------------------------------------------------------------------
+// --------------------------------------------------------------------------------------
 // Implements type inference for XML
 // --------------------------------------------------------------------------------------
 
@@ -30,7 +30,7 @@ let private getAttributes inferTypesFromValues cultureInfo (element:XElement) =
                         InferedType.Primitive(typeof<string>, None, false)
               } ]
 
-let getInferedTypeFromValue inferTypesFromValues cultureInfo (element:XElement) =
+let getInferedTypeFromValue inferTypesFromValues cultureInfo globalInference (element:XElement) =
     if inferTypesFromValues then
         let value = element.Value
         let typ = getInferedTypeFromString cultureInfo value None
@@ -39,7 +39,7 @@ let getInferedTypeFromValue inferTypesFromValues cultureInfo (element:XElement) 
             try
                 match JsonValue.Parse value with
                 | (JsonValue.Record _ | JsonValue.Array _) as json ->
-                    let jsonType = json |> JsonInference.inferType true cultureInfo element.Name.LocalName
+                    let jsonType = json |> JsonInference.inferType true cultureInfo element.Name.LocalName globalInference
                     InferedType.Json(jsonType, optional)
                 | _ -> typ
             with _ -> typ
@@ -63,22 +63,16 @@ let inferGlobalType inferTypesFromValues cultureInfo allowEmptyValues (elements:
     document.Descendants() 
     |> Seq.groupBy (fun el -> el.Name)
     |> Seq.map (fun (name, elements) ->
-        // Get attributes for all `name` named elements 
-        let attributes =
-          elements
-          |> Seq.map (getAttributes inferTypesFromValues cultureInfo)
-          |> Seq.reduce (unionRecordTypes allowEmptyValues)
-
         // Get type of body based on primitive values only
         let bodyType = 
           [| for e in elements do
               if not e.HasElements && not (String.IsNullOrEmpty(e.Value)) then
-                yield getInferedTypeFromValue inferTypesFromValues cultureInfo e |]
+                yield getInferedTypeFromValue inferTypesFromValues cultureInfo true e |]
           |> Array.fold (subtypeInfered allowEmptyValues) InferedType.Top
         let body = { Name = ""
                      Type = bodyType }
 
-        let record = InferedType.Record(Some(name.ToString()), body::attributes, false)
+        let record = InferedType.Record(Some(name.ToString()), [body], false)
         name.ToString(), (elements, record) )
     |> Map.ofSeq
 
@@ -90,7 +84,7 @@ let inferGlobalType inferTypesFromValues cultureInfo allowEmptyValues (elements:
     changed <- false
     for KeyValue(_, value) in assignment do
       match value with 
-      | elements, InferedType.Record(Some _name, body::_attributes, false) -> 
+      | elements, InferedType.Record(Some _, [body], false) -> 
           if body.Name <> "" then failwith "inferGlobalType: Assumed body element first"
           let childrenType = [ for e in elements -> 
                                  inferCollectionType allowEmptyValues [ for e in e.Elements() -> assignment.[e.Name.ToString()] |> snd ] ]
@@ -122,7 +116,7 @@ let rec inferLocalType inferTypesFromValues cultureInfo allowEmptyValues (elemen
 
       // If it has value, add primitive content
       elif not (String.IsNullOrEmpty element.Value) then
-        let primitive = getInferedTypeFromValue inferTypesFromValues cultureInfo element
+        let primitive = getInferedTypeFromValue inferTypesFromValues cultureInfo false element
         yield { Name = ""
                 Type = primitive } ]
 
