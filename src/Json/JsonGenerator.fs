@@ -1,4 +1,4 @@
-﻿// --------------------------------------------------------------------------------------
+// --------------------------------------------------------------------------------------
 // JSON type provider - generate code for accessing inferred elements
 // --------------------------------------------------------------------------------------
 namespace ProviderImplementation
@@ -20,6 +20,7 @@ open ProviderImplementation.ProvidedTypes
 type internal JsonGenerationContext =
   { CultureStr : string
     TypeProviderType : ProvidedTypeDefinition
+    UnifyGlobally : bool
     // to nameclash type names
     UniqueNiceName : string -> string 
     IJsonDocumentType : Type
@@ -27,13 +28,15 @@ type internal JsonGenerationContext =
     JsonRuntimeType : Type
     TypeCache : Dictionary<InferedType, ProvidedTypeDefinition>
     GenerateConstructors : bool }
-  static member Create(cultureStr, tpType, ?uniqueNiceName, ?typeCache) =
+  static member Create(cultureStr, tpType, ?uniqueNiceName, ?typeCache, ?unifyGlobally) =
     let uniqueNiceName = defaultArg uniqueNiceName (NameUtils.uniqueGenerator NameUtils.nicePascalName)
     let typeCache = defaultArg typeCache (Dictionary())
-    JsonGenerationContext.Create(cultureStr, tpType, uniqueNiceName, typeCache, true)
-  static member Create(cultureStr, tpType, uniqueNiceName, typeCache, generateConstructors) =
-    { CultureStr = cultureStr
+    let unifyGlobally = defaultArg unifyGlobally false
+    JsonGenerationContext.Create(cultureStr, tpType, uniqueNiceName, typeCache, true, unifyGlobally)
+  static member Create(cultureStr, tpType, uniqueNiceName, typeCache, generateConstructors, unifyGlobally) =
+    { JsonGenerationContext.CultureStr = cultureStr
       TypeProviderType = tpType
+      UnifyGlobally = unifyGlobally
       UniqueNiceName = uniqueNiceName 
       IJsonDocumentType = typeof<IJsonDocument>
       JsonValueType = typeof<JsonValue>
@@ -65,37 +68,8 @@ module JsonTypeBuilder =
   
   let (?) = QuotationBuilder.(?)
 
-  // check if a type was already created for the inferedType before creating a new one
-  let internal getOrCreateType ctx inferedType createType =
-    
-    // normalize properties of the inferedType which don't affect code generation
-    let rec normalize topLevel = function
-    | InferedType.Heterogeneous map -> 
-        map 
-        |> Map.map (fun _ inferedType -> normalize false inferedType) 
-        |> InferedType.Heterogeneous
-    | InferedType.Collection (order, types) -> 
-        InferedType.Collection (order, Map.map (fun _ (multiplicity, inferedType) -> multiplicity, normalize false inferedType) types)
-    | InferedType.Record (_, props, optional) -> 
-        let props = 
-          props
-          |> List.map (fun { Name = name; Type = inferedType } -> { Name = name; Type = normalize false inferedType })
-        // optional only affects the parent, so at top level always set to true regardless of the actual value
-        InferedType.Record (None, props, optional || topLevel)
-    | InferedType.Primitive (typ, unit, optional) when typ = typeof<Bit0> || typ = typeof<Bit1> -> InferedType.Primitive (typeof<int>, unit, optional)
-    | InferedType.Primitive (typ, unit, optional) when typ = typeof<Bit> -> InferedType.Primitive (typeof<bool>, unit, optional)
-    | x -> x
-
-    let inferedType = normalize true inferedType
-    let typ = 
-      match ctx.TypeCache.TryGetValue inferedType with
-      | true, typ -> typ
-      | _ -> 
-        let typ = createType()
-        ctx.TypeCache.Add(inferedType, typ)
-        typ
-
-    { ConvertedType = typ
+  let internal createType t = 
+    { ConvertedType = t
       OptionalConverter = None
       ConversionCallingType = JsonDocument }
 
@@ -265,8 +239,8 @@ module JsonTypeBuilder =
         { ConvertedType = elementResult.ConvertedType.MakeArrayType()
           OptionalConverter = Some conv
           ConversionCallingType = JsonDocument }
-
-    | InferedType.Record(name, props, optional) -> getOrCreateType ctx inferedType <| fun () ->
+    | InferedType.Record(_, _, false) when ctx.TypeCache.ContainsKey inferedType -> ctx.TypeCache.[inferedType] |> createType 
+    | InferedType.Record(name, props, optional) ->
         
         if optional && not optionalityHandledByParent then
           failwithf "generateJsonType: optionality not handled for %A" inferedType
@@ -279,6 +253,10 @@ module JsonTypeBuilder =
 
         // Generate new type for the record
         let objectTy = ProvidedTypeDefinition(name, Some ctx.IJsonDocumentType, hideObjectMethods = true, nonNullable = true)
+
+        // If we unify types globally, then save type for this record
+        if ctx.UnifyGlobally then
+            ctx.TypeCache.Add(inferedType, objectTy)
 
         ctx.TypeProviderType.AddMember(objectTy)
 
@@ -354,10 +332,10 @@ module JsonTypeBuilder =
                         invokeCode = fun (Singleton arg) -> 
                             <@@ JsonDocument.Create((%%arg:JsonValue), "") @@> )
 
-        objectTy
+        createType objectTy
 
-    | InferedType.Collection (_, types) -> getOrCreateType ctx inferedType <| fun () ->
-
+    | InferedType.Collection (_, _) when ctx.TypeCache.ContainsKey inferedType -> ctx.TypeCache.[inferedType] |> createType
+    | InferedType.Collection (_, types) -> 
         // Generate a choice type that calls either `GetArrayChildrenByTypeTag`
         // or `GetArrayChildByTypeTag`, depending on the multiplicity of the item
         generateMultipleChoiceType ctx types (*forCollection*)true nameOverride (fun multiplicity result tagCode ->
@@ -378,14 +356,19 @@ module JsonTypeBuilder =
               // Similar to the previous case, but call `TryGetArrayChildByTypeTag`
               let cultureStr = ctx.CultureStr
               ctx.JsonRuntimeType?TryGetArrayChildByTypeTag (result.ConvertedTypeErased ctx) (jDoc, cultureStr, tagCode, result.ConverterFunc ctx))
+        |> fun x ->
+            ctx.TypeCache.Add(inferedType, x)
+            createType x
 
-    | InferedType.Heterogeneous types -> getOrCreateType ctx inferedType <| fun () ->
-
+    | InferedType.Heterogeneous _ when ctx.TypeCache.ContainsKey inferedType -> ctx.TypeCache.[inferedType] |> createType
+    | InferedType.Heterogeneous types -> 
         // Generate a choice type that always calls `TryGetValueByTypeTag`
         let types = types |> Map.map (fun _ v -> InferedMultiplicity.OptionalSingle, v)
         generateMultipleChoiceType ctx types (*forCollection*)false nameOverride (fun multiplicity result tagCode -> fun (Singleton jDoc) -> 
           assert (multiplicity = InferedMultiplicity.OptionalSingle)
           let cultureStr = ctx.CultureStr
           ctx.JsonRuntimeType?TryGetValueByTypeTag (result.ConvertedTypeErased ctx) (jDoc, cultureStr, tagCode, result.ConverterFunc ctx))
-
+        |> fun x ->
+            ctx.TypeCache.Add(inferedType, x)
+            createType x
     | InferedType.Json _ -> failwith "Json type not supported"

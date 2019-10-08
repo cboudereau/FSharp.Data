@@ -1,4 +1,4 @@
-﻿// --------------------------------------------------------------------------------------
+// --------------------------------------------------------------------------------------
 // Implements type inference for XML
 // --------------------------------------------------------------------------------------
 
@@ -39,7 +39,7 @@ let getInferedTypeFromValue inferTypesFromValues cultureInfo (element:XElement) 
             try
                 match JsonValue.Parse value with
                 | (JsonValue.Record _ | JsonValue.Array _) as json ->
-                    let jsonType = json |> JsonInference.inferType true cultureInfo element.Name.LocalName
+                    let jsonType = json |> JsonInference.inferType true cultureInfo element.Name.LocalName false
                     InferedType.Json(jsonType, optional)
                 | _ -> typ
             with _ -> typ

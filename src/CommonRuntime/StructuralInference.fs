@@ -314,3 +314,7 @@ let parseUnitOfMeasure (provider:IUnitsOfMeasureProvider) (str:string) =
     | None ->
         let unit = provider.SI str
         if unit = null then None else Some unit
+
+let makeRecursive = function
+    | InferedType.Record (Some name, fields, optional) as t -> t
+    | t -> t

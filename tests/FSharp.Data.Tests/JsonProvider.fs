@@ -677,7 +677,7 @@ type HeterogeneousArray = JsonProvider<"""[8, 9, false, { "a": 3 }]""">
 
 [<Test>]
 let ``Can construct heterogeneous array``() =
-    let json = HeterogeneousArray.Root([| 8; 9 |], false, HeterogeneousArray.Record(3))
+    let json = HeterogeneousArray.Root([| 8; 9 |], false, HeterogeneousArray.Root2(3))
     json.JsonValue.ToString() |> normalize |> should equal (normalize """[
   8,
   9,
@@ -691,7 +691,7 @@ type HeterogeneousArrayWithOptionals = JsonProvider<"""[ [{ "a": 3 }], [8, 9, fa
 
 [<Test>]
 let ``Can construct heterogeneous arrays with optionals``() =
-    let json = HeterogeneousArrayWithOptionals.Root([| |], None, HeterogeneousArrayWithOptionals.Record(3))
+    let json = HeterogeneousArrayWithOptionals.Root([| |], None, HeterogeneousArrayWithOptionals.Root2(3))
     json.JsonValue.ToString() |> normalize |> should equal (normalize """[
   {
     "a": 3

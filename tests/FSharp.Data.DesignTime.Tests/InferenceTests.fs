@@ -18,6 +18,31 @@ open FSharp.Data.Runtime.StructuralTypes
 open FSharp.Data.Runtime.StructuralInference
 open ProviderImplementation
 
+
+module MakeRecursiveType =
+    let [<Test>] ``Simple recursive record is detected correctly``() =
+        let json = """{
+              "id": 1234,
+              "t" : { "firstname":"clem" },
+              "child": {
+                "id": 1234,
+                "t" : { "firstname":"clem" }    
+              }   
+            }""" |> JsonValue.Parse
+
+        let actual = [|json|] |> JsonInference.inferTypes true System.Globalization.CultureInfo.InvariantCulture "child" true
+
+        let expected =
+            let childField = { Name="child"; Type = InferedType.Top }
+            let idField = { Name="id"; Type = InferedType.Primitive(typeof<int>, None, false) }
+            let tType = InferedType.Record(Some "t", [{ Name = "firstname"; Type = InferedType.Primitive(typeof<string>, None, false) }], false)
+            let tField = { Name="t"; Type=tType }
+            let childType = InferedType.Record(Some "child", [idField; tField; childField], true)
+            childField.Type <- childType
+            childType.DropOptionality()
+
+        actual |> should equal expected        
+
 /// A collection containing just one type
 let SimpleCollection typ =
   InferedType.Collection([ typeTag typ], Map.ofSeq [typeTag typ, (InferedMultiplicity.Multiple, typ)])
