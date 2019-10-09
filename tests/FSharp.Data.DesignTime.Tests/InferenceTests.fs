@@ -19,18 +19,38 @@ open FSharp.Data.Runtime.StructuralInference
 open ProviderImplementation
 
 module InferedType =
+    let fold folder state inferedType =
+        let (|NotProcessed|_|) processed x =
+            processed
+            |> List.contains x
+            |> fun y -> if y then None else Some x
+
+        let rec fold processed folder state = function
+            | NotProcessed processed (InferedType.Record (_, fields, _) as r) ->
+                fields |> List.fold(fun s p -> fold (r::p.Type::processed) folder (folder s p.Type) p.Type) (folder state r)
+            | NotProcessed processed (InferedType.Json (y,_)) as x -> fold (x::processed) folder (folder state x) y
+            | NotProcessed processed (InferedType.Collection (_, y) as x) -> y |> Map.fold (fun s _ -> snd >> fold (x::processed) folder s) (folder state x)
+            | NotProcessed processed (InferedType.Heterogeneous m) as x -> m |> Map.fold (fun s _ -> fold (x::processed) folder s) (folder state x)
+            | NotProcessed processed t -> folder state t
+            | _ -> state
+
+        fold [] folder state inferedType
+
+    let records2 = fold (fun s -> function (InferedType.Record (Some name, _, _) as r) -> (name, r)::s | _ -> s) []
+    
     let records inferedType =
 
-        let rec (|NotProcessed|) (todos, processed) =
+        let rec (|NotProcessed|_|) (todos, processed) =
             match todos with
-            | h :: tail when processed |> List.exists ((=)h) -> (|NotProcessed|) (tail, processed)
-            | x -> x, processed
+            | h :: tail when processed |> List.exists ((=)h) -> (|NotProcessed|_|) (tail, processed)
+            | h :: tail -> Some (h, tail, h::processed)
+            | _ -> None
 
         List.unfold (function
-            | NotProcessed (InferedType.Record(Some name, fields, _) as r:: tail, processed) -> Some (Some (name, r), (List.append tail (fields |> List.map (fun p -> p.Type)), r::processed))
-            | NotProcessed (InferedType.Json (x, _) as p :: tail, processed) -> Some (None, ((x::tail), p::processed))
-            | NotProcessed (InferedType.Collection (_, m) as p :: tail, processed) -> Some (None, (m |> Map.toList |> List.map (snd >> snd) |> List.append tail, p::processed))
-            | NotProcessed (InferedType.Heterogeneous(m) as p:: tail, processed) -> Some (None, (m |> Map.toList |> List.map snd |> List.append tail, p::processed))
+            | NotProcessed (InferedType.Record(Some name, fields, _) as r, tail, processed) -> Some (Some (name, r), (List.append tail (fields |> List.map (fun p -> p.Type)), processed))
+            | NotProcessed (InferedType.Json (x, _), tail, processed) -> Some (None, ((x::tail), processed))
+            | NotProcessed (InferedType.Collection (_, m) , tail, processed) -> Some (None, (m |> Map.toList |> List.map (snd >> snd) |> List.append tail, processed))
+            | NotProcessed (InferedType.Heterogeneous(m), tail, processed) -> Some (None, (m |> Map.toList |> List.map snd |> List.append tail, processed))
             | _ -> None) ([inferedType], [])
         |> List.choose id
 
@@ -96,6 +116,7 @@ module MakeRecursiveType =
             childField.Type <- childType
             childType.DropOptionality()
 
+        let y = InferedType.records2 expected
         let x = InferedType.records expected
         x |> should equal []
         //actual |> should equal expected
