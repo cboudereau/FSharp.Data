@@ -36,9 +36,9 @@ module InferedType =
 
         fold [] folder state inferedType
 
-    let records2 = fold (fun s -> function (InferedType.Record (Some name, _, _) as r) -> (name, r)::s | _ -> s) []
+    let records = fold (fun s -> function (InferedType.Record (Some name, _, _) as r) -> (name, r)::s | _ -> s) []
     
-    let records inferedType =
+    let recordsOld inferedType =
 
         let rec (|NotProcessed|_|) (todos, processed) =
             match todos with
@@ -56,12 +56,10 @@ module InferedType =
 
 module MakeRecursiveType =
     module StructuralInference =
-        let records inferedType = failwith "not yet implemented" 
-
         let makeRecursive inferedType =
 
             let roots = 
-                records inferedType
+                InferedType.records inferedType
                 |> Seq.toList
                 |> List.groupBy fst
                 |> List.map (fun (name, samples) -> name, samples |> List.map snd |> List.reduce (StructuralInference.subtypeInfered false))
