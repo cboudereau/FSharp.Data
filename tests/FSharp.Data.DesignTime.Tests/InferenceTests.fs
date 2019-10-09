@@ -38,22 +38,6 @@ module InferedType =
 
     let records = fold (fun s -> function (InferedType.Record (Some name, _, _) as r) -> (name, r)::s | _ -> s) []
     
-    let recordsOld inferedType =
-
-        let rec (|NotProcessed|_|) (todos, processed) =
-            match todos with
-            | h :: tail when processed |> List.exists ((=)h) -> (|NotProcessed|_|) (tail, processed)
-            | h :: tail -> Some (h, tail, h::processed)
-            | _ -> None
-
-        List.unfold (function
-            | NotProcessed (InferedType.Record(Some name, fields, _) as r, tail, processed) -> Some (Some (name, r), (List.append tail (fields |> List.map (fun p -> p.Type)), processed))
-            | NotProcessed (InferedType.Json (x, _), tail, processed) -> Some (None, ((x::tail), processed))
-            | NotProcessed (InferedType.Collection (_, m) , tail, processed) -> Some (None, (m |> Map.toList |> List.map (snd >> snd) |> List.append tail, processed))
-            | NotProcessed (InferedType.Heterogeneous(m), tail, processed) -> Some (None, (m |> Map.toList |> List.map snd |> List.append tail, processed))
-            | _ -> None) ([inferedType], [])
-        |> List.choose id
-
 module MakeRecursiveType =
     module StructuralInference =
         let makeRecursive inferedType =
