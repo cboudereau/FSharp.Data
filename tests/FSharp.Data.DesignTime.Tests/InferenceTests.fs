@@ -20,23 +20,22 @@ open ProviderImplementation
 
 module InferedType =
     let fold folder state inferedType =
-        let (|NotProcessed|_|) processed x =
+        let (|Visited|_|) processed x =
             processed
             |> List.contains x
-            |> fun y -> if y then None else Some x
+            |> fun y -> if y then Some () else None
 
-        let rec fold processed folder state = function
-            | NotProcessed processed (InferedType.Record (_, fields, _) as r) ->
-                fields |> List.fold(fun s p -> fold (r::p.Type::processed) folder (folder s p.Type) p.Type) (folder state r)
-            | NotProcessed processed (InferedType.Json (y,_)) as x -> fold (x::processed) folder (folder state x) y
-            | NotProcessed processed (InferedType.Collection (_, y) as x) -> y |> Map.fold (fun s _ -> snd >> fold (x::processed) folder s) (folder state x)
-            | NotProcessed processed (InferedType.Heterogeneous m) as x -> m |> Map.fold (fun s _ -> fold (x::processed) folder s) (folder state x)
-            | NotProcessed processed t -> folder state t
-            | _ -> state
+        let rec fold folder (processed, state) = function
+            | Visited processed -> processed, state
+            | InferedType.Record (_, fields, _) as r -> fields |> List.fold(fun (p, s) x -> fold folder (x.Type :: p, folder s x.Type) x.Type) (r :: processed, folder state r)
+            | InferedType.Json (y,_) as x -> fold folder (x::processed, folder state x) y
+            | InferedType.Collection (_, y) as x -> y |> Map.fold (fun (p, s) _ -> snd >> fun z -> fold folder (z::p, folder s z) z) (x::processed, folder state x)
+            | InferedType.Heterogeneous m as x -> m |> Map.fold (fun (p, s) _ z -> fold folder (z::p, folder s z) z) (x::processed, folder state x)
+            | t -> t::processed, folder state t
 
-        fold [] folder state inferedType
+        fold folder ([],state) inferedType |> snd 
 
-    let records = fold (fun s -> function (InferedType.Record (Some name, _, _) as r) -> (name, r)::s | _ -> s) []
+    let records = fold (fun s -> function (InferedType.Record (Some name, _, _) as r) -> (name, r) :: s | _ -> s) []
     
 module MakeRecursiveType =
     module StructuralInference =
@@ -98,7 +97,6 @@ module MakeRecursiveType =
             childField.Type <- childType
             childType.DropOptionality()
 
-        let y = InferedType.records2 expected
         let x = InferedType.records expected
         x |> should equal []
         //actual |> should equal expected
