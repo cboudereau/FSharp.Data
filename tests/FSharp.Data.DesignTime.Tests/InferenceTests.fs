@@ -18,6 +18,106 @@ open FSharp.Data.Runtime.StructuralTypes
 open FSharp.Data.Runtime.StructuralInference
 open ProviderImplementation
 
+module InferedType =
+    let records inferedType =
+
+        let rec (|NotProcessed|) (todos, processed) =
+            match todos with
+            | h :: tail when processed |> List.exists ((=)h) -> (|NotProcessed|) (tail, processed)
+            | x -> x, processed
+
+        List.unfold (function
+            | NotProcessed (InferedType.Record(Some name, fields, _) as r:: tail, processed) -> Some (Some (name, r), (List.append tail (fields |> List.map (fun p -> p.Type)), r::processed))
+            | NotProcessed (InferedType.Json (x, _) as p :: tail, processed) -> Some (None, ((x::tail), p::processed))
+            | NotProcessed (InferedType.Collection (_, m) as p :: tail, processed) -> Some (None, (m |> Map.toList |> List.map (snd >> snd) |> List.append tail, p::processed))
+            | NotProcessed (InferedType.Heterogeneous(m) as p:: tail, processed) -> Some (None, (m |> Map.toList |> List.map snd |> List.append tail, p::processed))
+            | _ -> None) ([inferedType], [])
+        |> List.choose id
+
+module MakeRecursiveType =
+    module StructuralInference =
+        let records inferedType = failwith "not yet implemented" 
+
+        let makeRecursive inferedType =
+
+            let roots = 
+                records inferedType
+                |> Seq.toList
+                |> List.groupBy fst
+                |> List.map (fun (name, samples) -> name, samples |> List.map snd |> List.reduce (StructuralInference.subtypeInfered false))
+                |> Map.ofList
+
+            let (|Property|_|) n = List.partition (fun (p:InferedProperty) -> p.Name = n) >> fun (x, y) -> if x |> List.isEmpty then None else Some (x,y)
+
+            let reduceDepth roots =
+                roots
+                |> Map.map (fun k -> function
+                    | InferedType.Record (Some name, Property k (recFields, otherFields), optional) as t when k = name ->
+                        let changed = recFields |> List.fold (fun s p -> if p.Type <> t then p.Type <- t; true else s || false) false
+                        InferedType.Record(Some name, List.append recFields otherFields, optional)
+                    | t -> t )
+
+            let patchType roots inferedType = failwith "not yet implemented" 
+                //InferedType.fold (fun s -> function
+                //    | InferedType.Record(Some name, fields, optional) as r ->
+                //        match roots |> Map.tryFind name with
+                //        | Some t -> t
+                //        | None -> r
+                //    | t -> t) InferedType.Top inferedType
+
+            inferedType |> patchType (reduceDepth roots)
+
+
+    let [<Test>] ``Simple recursive record is detected correctly``() =
+        let json = """{
+              "id": 1234,
+              "t" : { "firstname":"clem" },
+              "child": {
+                "id": 1234,
+                "t" : { "firstname":"clem" }, 
+                "child": {
+                  "id": 1234,
+                  "t" : { "firstname":"clem" }    
+                }   
+              }   
+            }""" |> JsonValue.Parse
+
+        //let actual =
+        //    json
+        //    |> JsonInference.inferType true System.Globalization.CultureInfo.InvariantCulture "child"
+        //    |> StructuralInference.makeRecursive
+
+        let expected =
+            let childField = { Name="child"; Type = InferedType.Top }
+            let idField = { Name="id"; Type = InferedType.Primitive(typeof<int>, None, false) }
+            let tType = InferedType.Record(Some "t", [{ Name = "firstname"; Type = InferedType.Primitive(typeof<string>, None, false) }], false)
+            let tField = { Name="t"; Type=tType }
+            let childType = InferedType.Record(Some "child", [idField; tField; childField], true)
+            childField.Type <- childType
+            childType.DropOptionality()
+
+        let x = InferedType.records expected
+        x |> should equal []
+        //actual |> should equal expected
+
+    //let [<Test>] ``Simple recursice record detection as property hack`` () =
+    //   let json = """{
+    //         "id": 1234,
+    //         "t" : { "firstname":"clem" },
+    //         "child": {
+    //           "id": 1234,
+    //           "t" : { "firstname":"clem" }, 
+    //           "child": {
+    //             "id": 1234,
+    //             "t" : { "firstname":"clem" }    
+    //           }   
+    //         }   
+    //       }""" |> JsonValue.Parse
+
+    //   let actual =
+    //       json |> JsonInference.inferType true System.Globalization.CultureInfo.InvariantCulture "child"
+ 
+
 /// A collection containing just one type
 let SimpleCollection typ =
   InferedType.Collection([ typeTag typ], Map.ofSeq [typeTag typ, (InferedMultiplicity.Multiple, typ)])
