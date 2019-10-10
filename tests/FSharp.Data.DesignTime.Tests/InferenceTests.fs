@@ -92,41 +92,26 @@ module MakeRecursiveType =
         let actual =
             json
             |> JsonInference.inferType true System.Globalization.CultureInfo.InvariantCulture "child"
-        //    |> StructuralInference.makeRecursive
+            |> InferedType.flatten
+
+        let idField = { Name="id"; Type = InferedType.Primitive(typeof<int>, None, false) }
+        let tType = InferedType.Record(Some "t", [{ Name = "firstname"; Type = InferedType.Primitive(typeof<string>, None, false) }], false)
+        let tField = { Name="t"; Type=tType }
 
         let expected =
             let childField = { Name="child"; Type = InferedType.Top }
-            let idField = { Name="id"; Type = InferedType.Primitive(typeof<int>, None, false) }
-            let tType = InferedType.Record(Some "t", [{ Name = "firstname"; Type = InferedType.Primitive(typeof<string>, None, false) }], false)
-            let tField = { Name="t"; Type=tType }
             let childType = InferedType.Record(Some "child", [idField; tField; childField], true)
             childField.Type <- childType
             childType.DropOptionality()
 
-        let y' = InferedType.flatten actual
-        y' |> should equal expected
+        match actual with
+        | InferedType.Record(Some "child", idField1::tField1::({ Name="child"; Type=InferedType.Record(Some "child", idField2::tField2::child2::_, true) } as child1)::_, false) when
+            Object.ReferenceEquals(child1, child2)
+            && idField = idField1 && idField1 = idField2
+            && tField = tField1 && tField1 = tField2 -> ()
+        | _ -> failwith "not expected"
 
-
-
-        //actual |> should equal expected
-
-    //let [<Test>] ``Simple recursice record detection as property hack`` () =
-    //   let json = """{
-    //         "id": 1234,
-    //         "t" : { "firstname":"clem" },
-    //         "child": {
-    //           "id": 1234,
-    //           "t" : { "firstname":"clem" }, 
-    //           "child": {
-    //             "id": 1234,
-    //             "t" : { "firstname":"clem" }    
-    //           }   
-    //         }   
-    //       }""" |> JsonValue.Parse
-
-    //   let actual =
-    //       json |> JsonInference.inferType true System.Globalization.CultureInfo.InvariantCulture "child"
- 
+        actual |> should equal expected
 
 /// A collection containing just one type
 let SimpleCollection typ =
