@@ -19,6 +19,25 @@ open FSharp.Data.Runtime.StructuralInference
 open ProviderImplementation
 
 module InferedType =
+    
+    let foldBack folder inferedType state =
+        let (|Visited|_|) processed x =
+            processed
+            |> List.contains x
+            |> fun y -> if y then Some () else None
+
+        let rec foldBack folder inferedType (processed, state) =
+            match inferedType with
+            | Visited processed -> processed, state
+            | InferedType.Record (_, fields, _) as r -> (r :: processed, folder r state) |> List.foldBack(fun x (p, s) -> foldBack folder x.Type (x.Type :: p, folder x.Type s)) fields
+            | InferedType.Json (y,_) as x -> foldBack folder y (x::processed, folder x state) 
+            | InferedType.Collection (_, y) as x -> y |> Map.fold (fun (p, s) _ -> snd >> fun z -> foldBack folder z (z::p, folder z s)) (x::processed, folder x state)
+            | InferedType.Heterogeneous m as x -> m |> Map.fold (fun (p, s) _ z -> foldBack folder z (z::p, folder z s)) (x::processed, folder x state)
+            | t -> t::processed, folder t state
+
+        foldBack folder inferedType ([],state)  |> snd 
+
+
     let fold folder state inferedType =
         let (|Visited|_|) processed x =
             processed
@@ -35,40 +54,30 @@ module InferedType =
 
         fold folder ([],state) inferedType |> snd 
 
-    let records = fold (fun s -> function (InferedType.Record (Some name, _, _) as r) -> (name, r) :: s | _ -> s) []
-    
+    let records x = foldBack (fun x s -> match x with InferedType.Record (Some name, _, _) as r -> (name, r) :: s | _ -> s) x [] 
+    let uniqueRecords =
+        records
+        >> List.groupBy fst
+        >> List.map (fun (name, possibleTypes) ->
+            match possibleTypes with
+            | [h] -> h
+            | n ->
+                let (recFields, otherFields) =
+                    n |> List.map (snd >> function InferedType.Record (_, fields, _) -> fields |> List.partition(fun x -> match x.Type with InferedType.Record (Some p, _, _) -> p <> name | _ -> false) | _ -> [],[])
+                    |> List.fold (fun (s, t) (x, y) -> x |> List.map (fun p -> p.Name) |> Set |> Set.union s , StructuralInference.unionRecordTypes false t y) (Set.empty, [])
+                    |> fun (x, y) -> x |> Set.toList |> List.map (fun n -> { Name=n; Type=InferedType.Top }), y
+                let r = InferedType.Record(Some name, List.append recFields otherFields, true)
+
+                recFields |> List.iter (fun p -> p.Type <- r)
+
+                name, r.DropOptionality())
+        >> Map.ofList
+
+    let makeRecursive = function
+        | InferedType.Record (Some name, _ , _) as r -> uniqueRecords r |> Map.find name
+        | other -> other
+        
 module MakeRecursiveType =
-    module StructuralInference =
-        let makeRecursive inferedType =
-
-            let roots = 
-                InferedType.records inferedType
-                |> Seq.toList
-                |> List.groupBy fst
-                |> List.map (fun (name, samples) -> name, samples |> List.map snd |> List.reduce (StructuralInference.subtypeInfered false))
-                |> Map.ofList
-
-            let (|Property|_|) n = List.partition (fun (p:InferedProperty) -> p.Name = n) >> fun (x, y) -> if x |> List.isEmpty then None else Some (x,y)
-
-            let reduceDepth roots =
-                roots
-                |> Map.map (fun k -> function
-                    | InferedType.Record (Some name, Property k (recFields, otherFields), optional) as t when k = name ->
-                        let changed = recFields |> List.fold (fun s p -> if p.Type <> t then p.Type <- t; true else s || false) false
-                        InferedType.Record(Some name, List.append recFields otherFields, optional)
-                    | t -> t )
-
-            let patchType roots inferedType = failwith "not yet implemented" 
-                //InferedType.fold (fun s -> function
-                //    | InferedType.Record(Some name, fields, optional) as r ->
-                //        match roots |> Map.tryFind name with
-                //        | Some t -> t
-                //        | None -> r
-                //    | t -> t) InferedType.Top inferedType
-
-            inferedType |> patchType (reduceDepth roots)
-
-
     let [<Test>] ``Simple recursive record is detected correctly``() =
         let json = """{
               "id": 1234,
@@ -78,14 +87,18 @@ module MakeRecursiveType =
                 "t" : { "firstname":"clem" }, 
                 "child": {
                   "id": 1234,
-                  "t" : { "firstname":"clem" }    
+                  "t" : { "firstname":"clem" },
+                  "child": {
+                    "id": 1234,
+                    "t" : { "firstname":"clem" } 
+                  }   
                 }   
               }   
             }""" |> JsonValue.Parse
 
-        //let actual =
-        //    json
-        //    |> JsonInference.inferType true System.Globalization.CultureInfo.InvariantCulture "child"
+        let actual =
+            json
+            |> JsonInference.inferType true System.Globalization.CultureInfo.InvariantCulture "child"
         //    |> StructuralInference.makeRecursive
 
         let expected =
@@ -97,8 +110,8 @@ module MakeRecursiveType =
             childField.Type <- childType
             childType.DropOptionality()
 
-        let x = InferedType.records expected
-        x |> should equal []
+        let y' = InferedType.makeRecursive actual
+        y' |> should equal expected
         //actual |> should equal expected
 
     //let [<Test>] ``Simple recursice record detection as property hack`` () =
