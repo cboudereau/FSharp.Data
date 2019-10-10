@@ -37,46 +37,70 @@ module InferedType =
 
         foldBack folder inferedType ([],state)  |> snd 
 
+    let flatten2 x =
+        let rec makeRecursive roots = function
+            | InferedType.Record (Some name, _ , _) -> roots |> Map.find name
+            | InferedType.Json (x, optional) -> InferedType.Json (makeRecursive roots x, optional)
+            | InferedType.Heterogeneous m -> m |> Map.map(fun _ -> makeRecursive roots) |> InferedType.Heterogeneous
+            | InferedType.Collection(tags, types) -> InferedType.Collection(tags, types |> Map.map(fun _ (m,x) -> m, makeRecursive roots x))
+            | other -> other
 
-    let fold folder state inferedType =
-        let (|Visited|_|) processed x =
-            processed
-            |> List.contains x
-            |> fun y -> if y then Some () else None
+        let roots =
+            let records x = foldBack (fun x s -> match x with InferedType.Record (Some name, _, _) as r -> (name, r) :: s | _ -> s) x [] 
 
-        let rec fold folder (processed, state) = function
-            | Visited processed -> processed, state
-            | InferedType.Record (_, fields, _) as r -> fields |> List.fold(fun (p, s) x -> fold folder (x.Type :: p, folder s x.Type) x.Type) (r :: processed, folder state r)
-            | InferedType.Json (y,_) as x -> fold folder (x::processed, folder state x) y
-            | InferedType.Collection (_, y) as x -> y |> Map.fold (fun (p, s) _ -> snd >> fun z -> fold folder (z::p, folder s z) z) (x::processed, folder state x)
-            | InferedType.Heterogeneous m as x -> m |> Map.fold (fun (p, s) _ z -> fold folder (z::p, folder s z) z) (x::processed, folder state x)
-            | t -> t::processed, folder state t
+            records
+            >> List.groupBy fst
+            >> List.map (fun (name, possibleTypes) ->
+                match possibleTypes with
+                | [h] -> h
+                | n ->
 
-        fold folder ([],state) inferedType |> snd 
+                    let mergedFields =
+                        n
+                        |> List.fold (fun s -> snd >> function
+                            | InferedType.Record (_, fields, _) -> if s |> List.isEmpty then fields else StructuralInference.unionRecordTypes false s fields
+                            | _ -> s) []
 
-    let records x = foldBack (fun x s -> match x with InferedType.Record (Some name, _, _) as r -> (name, r) :: s | _ -> s) x [] 
-    let uniqueRecords =
-        records
-        >> List.groupBy fst
-        >> List.map (fun (name, possibleTypes) ->
-            match possibleTypes with
-            | [h] -> h
-            | n ->
-                let (recFields, otherFields) =
-                    n |> List.map (snd >> function InferedType.Record (_, fields, _) -> fields |> List.partition(fun x -> match x.Type with InferedType.Record (Some p, _, _) -> p <> name | _ -> false) | _ -> [],[])
-                    |> List.fold (fun (s, t) (x, y) -> x |> List.map (fun p -> p.Name) |> Set |> Set.union s , StructuralInference.unionRecordTypes false t y) (Set.empty, [])
-                    |> fun (x, y) -> x |> Set.toList |> List.map (fun n -> { Name=n; Type=InferedType.Top }), y
-                let r = InferedType.Record(Some name, List.append recFields otherFields, true)
+                    let r = InferedType.Record(Some name, mergedFields, true)
 
-                recFields |> List.iter (fun p -> p.Type <- r)
+                    mergedFields |> List.iter (fun p -> match p.Type with InferedType.Record(Some n, _, _) when n = name -> p.Type <- r | _ -> ())
 
-                name, r.DropOptionality())
-        >> Map.ofList
+                    name, r.DropOptionality())
+            >> Map.ofList
 
-    let makeRecursive = function
-        | InferedType.Record (Some name, _ , _) as r -> uniqueRecords r |> Map.find name
-        | other -> other
-        
+        makeRecursive (roots x) x
+
+    let flatten x =
+        let rec makeRecursive roots = function
+            | InferedType.Record (Some name, _ , _) -> roots |> Map.find name
+            | InferedType.Json (x, optional) -> InferedType.Json (makeRecursive roots x, optional)
+            | InferedType.Heterogeneous m -> m |> Map.map(fun _ -> makeRecursive roots) |> InferedType.Heterogeneous
+            | InferedType.Collection(tags, types) -> InferedType.Collection(tags, types |> Map.map(fun _ (m,x) -> m, makeRecursive roots x))
+            | other -> other
+
+        let roots =
+            let records x = foldBack (fun x s -> match x with InferedType.Record (Some name, _, _) as r -> (name, r) :: s | _ -> s) x [] 
+
+            records
+            >> List.groupBy fst
+            >> List.map (fun (name, possibleTypes) ->
+                match possibleTypes with
+                | [h] -> h
+                | n ->
+                    let (recFields, otherFields) =
+                        n
+                        |> List.map (snd >> function InferedType.Record (_, fields, _) -> fields |> List.partition(fun x -> match x.Type with InferedType.Record (Some p, _, _) -> p = name | _ -> false) | _ -> [],[])
+                        |> List.fold (fun (s, t) (x, y) -> x |> List.map (fun p -> p.Name) |> Set |> Set.union s , if t |> List.isEmpty then y else StructuralInference.unionRecordTypes false t y) (Set.empty, [])
+                        |> fun (x, y) -> x |> Set.toList |> List.map (fun n -> { Name=n; Type=InferedType.Top }), y
+                    let r = InferedType.Record(Some name, List.append recFields otherFields, true)
+
+                    recFields |> List.iter (fun p -> p.Type <- r)
+
+                    name, r.DropOptionality())
+            >> Map.ofList
+
+        makeRecursive (roots x) x
+
 module MakeRecursiveType =
     let [<Test>] ``Simple recursive record is detected correctly``() =
         let json = """{
@@ -110,8 +134,11 @@ module MakeRecursiveType =
             childField.Type <- childType
             childType.DropOptionality()
 
-        let y' = InferedType.makeRecursive actual
+        let y' = InferedType.flatten2 actual
         y' |> should equal expected
+
+
+
         //actual |> should equal expected
 
     //let [<Test>] ``Simple recursice record detection as property hack`` () =
