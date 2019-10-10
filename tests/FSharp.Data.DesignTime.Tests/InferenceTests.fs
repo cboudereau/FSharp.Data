@@ -37,7 +37,7 @@ module InferedType =
 
         foldBack folder inferedType ([],state)  |> snd 
 
-    let flatten2 x =
+    let flatten x =
         let rec makeRecursive roots = function
             | InferedType.Record (Some name, _ , _) -> roots |> Map.find name
             | InferedType.Json (x, optional) -> InferedType.Json (makeRecursive roots x, optional)
@@ -64,37 +64,6 @@ module InferedType =
                     let r = InferedType.Record(Some name, mergedFields, true)
 
                     mergedFields |> List.iter (fun p -> match p.Type with InferedType.Record(Some n, _, _) when n = name -> p.Type <- r | _ -> ())
-
-                    name, r.DropOptionality())
-            >> Map.ofList
-
-        makeRecursive (roots x) x
-
-    let flatten x =
-        let rec makeRecursive roots = function
-            | InferedType.Record (Some name, _ , _) -> roots |> Map.find name
-            | InferedType.Json (x, optional) -> InferedType.Json (makeRecursive roots x, optional)
-            | InferedType.Heterogeneous m -> m |> Map.map(fun _ -> makeRecursive roots) |> InferedType.Heterogeneous
-            | InferedType.Collection(tags, types) -> InferedType.Collection(tags, types |> Map.map(fun _ (m,x) -> m, makeRecursive roots x))
-            | other -> other
-
-        let roots =
-            let records x = foldBack (fun x s -> match x with InferedType.Record (Some name, _, _) as r -> (name, r) :: s | _ -> s) x [] 
-
-            records
-            >> List.groupBy fst
-            >> List.map (fun (name, possibleTypes) ->
-                match possibleTypes with
-                | [h] -> h
-                | n ->
-                    let (recFields, otherFields) =
-                        n
-                        |> List.map (snd >> function InferedType.Record (_, fields, _) -> fields |> List.partition(fun x -> match x.Type with InferedType.Record (Some p, _, _) -> p = name | _ -> false) | _ -> [],[])
-                        |> List.fold (fun (s, t) (x, y) -> x |> List.map (fun p -> p.Name) |> Set |> Set.union s , if t |> List.isEmpty then y else StructuralInference.unionRecordTypes false t y) (Set.empty, [])
-                        |> fun (x, y) -> x |> Set.toList |> List.map (fun n -> { Name=n; Type=InferedType.Top }), y
-                    let r = InferedType.Record(Some name, List.append recFields otherFields, true)
-
-                    recFields |> List.iter (fun p -> p.Type <- r)
 
                     name, r.DropOptionality())
             >> Map.ofList
@@ -134,7 +103,7 @@ module MakeRecursiveType =
             childField.Type <- childType
             childType.DropOptionality()
 
-        let y' = InferedType.flatten2 actual
+        let y' = InferedType.flatten actual
         y' |> should equal expected
 
 
