@@ -29,26 +29,42 @@ module InferedType =
         let rec foldBack folder inferedType (processed, state) =
             match inferedType with
             | Visited processed -> processed, state
-            | InferedType.Record (_, fields, _) as r -> (r :: processed, folder r state) |> List.foldBack(fun x (p, s) -> foldBack folder x.Type (x.Type :: p, folder x.Type s)) fields
+            | InferedType.Record (_, fields, _) as r -> (r :: processed, folder r state) |> List.foldBack(fun x (p, s) -> foldBack folder x.Type (p, s)) fields
+            | InferedType.Collection (_, y) as x -> y |> Map.fold (fun (p, s) _ -> snd >> fun z -> foldBack folder z (p, s)) (x::processed, folder x state)
+            | InferedType.Heterogeneous m as x -> m |> Map.fold (fun (p, s) _ z -> foldBack folder z (p, s)) (x::processed, folder x state)
             | InferedType.Json (y,_) as x -> foldBack folder y (x::processed, folder x state) 
-            | InferedType.Collection (_, y) as x -> y |> Map.fold (fun (p, s) _ -> snd >> fun z -> foldBack folder z (z::p, folder z s)) (x::processed, folder x state)
-            | InferedType.Heterogeneous m as x -> m |> Map.fold (fun (p, s) _ z -> foldBack folder z (z::p, folder z s)) (x::processed, folder x state)
-            | t -> t::processed, folder t state
+            | InferedType.Null
+            | InferedType.Top
+            | InferedType.Primitive (_,_,_) as t -> t :: processed, folder t state
 
         foldBack folder inferedType ([],state)  |> snd 
 
-    let flatten x =
+    let flatten parentName x =
         let rec makeRecursive roots = function
             | InferedType.Record (Some name, _ , _) -> roots |> Map.find name
-            | InferedType.Json (x, optional) -> InferedType.Json (makeRecursive roots x, optional)
             | InferedType.Heterogeneous m -> m |> Map.map(fun _ -> makeRecursive roots) |> InferedType.Heterogeneous
             | InferedType.Collection(tags, types) -> InferedType.Collection(tags, types |> Map.map(fun _ (m,x) -> m, makeRecursive roots x))
+            | InferedType.Json (x, optional) -> InferedType.Json (makeRecursive roots x, optional)
             | other -> other
 
-        let roots =
+        let roots parentName =
+            let types parentName inferedType =
+                foldBack (fun x (parentName, s) ->
+                    match x with
+                    | InferedType.Record (Some name, _, _) as r -> name, (name, r) :: s
+                    | InferedType.Collection (_, _)
+                    | InferedType.Record (None, _, _) 
+                    | InferedType.Heterogeneous _ 
+                    | InferedType.Json (_, _) as j -> parentName, (parentName, j) :: s 
+                    | InferedType.Null
+                    | InferedType.Top
+                    | InferedType.Primitive (_,_,_) -> (parentName, s)
+                ) inferedType (parentName, [])
+                |> snd
+
             let records x = foldBack (fun x s -> match x with InferedType.Record (Some name, _, _) as r -> (name, r) :: s | _ -> s) x [] 
 
-            records
+            types parentName
             >> List.groupBy fst
             >> List.map (fun (name, possibleTypes) ->
                 match possibleTypes with
@@ -68,7 +84,7 @@ module InferedType =
                     name, r.DropOptionality())
             >> Map.ofList
 
-        makeRecursive (roots x) x
+        makeRecursive (roots parentName x) x
 
 module MakeRecursiveType =
     let [<Test>] ``Simple recursive record is detected correctly``() =
@@ -92,26 +108,51 @@ module MakeRecursiveType =
         let actual =
             json
             |> JsonInference.inferType true System.Globalization.CultureInfo.InvariantCulture "child"
-            |> InferedType.flatten
+            |> InferedType.flatten "child"
 
         let idField = { Name="id"; Type = InferedType.Primitive(typeof<int>, None, false) }
         let tType = InferedType.Record(Some "t", [{ Name = "firstname"; Type = InferedType.Primitive(typeof<string>, None, false) }], false)
         let tField = { Name="t"; Type=tType }
 
-        let expected =
-            let childField = { Name="child"; Type = InferedType.Top }
-            let childType = InferedType.Record(Some "child", [idField; tField; childField], true)
-            childField.Type <- childType
-            childType.DropOptionality()
-
+        //We cannot use the InferedType equality of 2 identical (not same reference) recursive structure instances.
         match actual with
-        | InferedType.Record(Some "child", idField1::tField1::({ Name="child"; Type=InferedType.Record(Some "child", idField2::tField2::child2::_, true) } as child1)::_, false) when
-            Object.ReferenceEquals(child1, child2)
-            && idField = idField1 && idField1 = idField2
-            && tField = tField1 && tField1 = tField2 -> ()
-        | _ -> failwith "not expected"
+        | InferedType.Record(Some "child", idField1::tField1::({ Name="child"; Type=InferedType.Record(Some "child", idField2::tField2::child2::_, true) } as child1)::_, false) ->
+            idField |> should equal idField1
+            idField1 |> should equal idField2
 
-        actual |> should equal expected
+            tField |> should equal tField1
+            tField1 |> should equal tField2
+
+            Object.ReferenceEquals(child1, child2) |> should equal true
+        | _ -> failwith "expected a child cycle"
+
+    let [<Test>] ``Simple recursive record collection is detected correctly``() =
+        let json = """{
+              "id": 1234,
+              "t" : { "firstname":"clem" },
+              "children": [ {
+                "id": 1234,
+                "t" : { "firstname":"clem" }, 
+                "children": [ {
+                  "id": 1234,
+                  "t" : { "firstname":"clem" },
+                  "children": []
+                } ]
+              } ]
+            }""" |> JsonValue.Parse
+
+        let input =
+            json
+            |> JsonInference.inferType true System.Globalization.CultureInfo.InvariantCulture "child"
+
+        let actual = input |> InferedType.flatten "child"
+
+        let idField = { Name="id"; Type = InferedType.Primitive(typeof<int>, None, false) }
+        let tType = InferedType.Record(Some "t", [{ Name = "firstname"; Type = InferedType.Primitive(typeof<string>, None, false) }], false)
+        let tField = { Name="t"; Type=tType }
+
+        //We cannot use the InferedType equality of 2 identical (not same reference) recursive structure instances.
+        actual |> should equal InferedType.Top
 
 /// A collection containing just one type
 let SimpleCollection typ =
