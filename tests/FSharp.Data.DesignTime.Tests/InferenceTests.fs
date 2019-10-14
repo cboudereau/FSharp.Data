@@ -104,7 +104,7 @@ module InferedType =
         roots |> Map.find rootName |> fun x -> x.Type.DropOptionality()
         
 module MakeRecursiveType =
-    let [<Test>] ``Simple recursive record is detected correctly``() =
+    let [<Test>] ``Recursive record is detected correctly``() =
         let json = """{
               "id": 1234,
               "t" : { "firstname":"clem" },
@@ -143,7 +143,7 @@ module MakeRecursiveType =
             Object.ReferenceEquals(child1, child2) |> should equal true
         | _ -> failwith "expected a child cycle"
 
-    let [<Test>] ``Simple recursive record collection is detected correctly``() =
+    let [<Test>] ``Recursive record collection is detected correctly``() =
         let json = """{
               "id": 1234,
               "t" : { "firstname":"clem" },
@@ -179,6 +179,50 @@ module MakeRecursiveType =
 
             match child2 with
             | InferedType.Record(Some "child", _::_::{ Name="children"; Type=c2 }::_, _) -> c |> should equal c2
+            | _ -> failwith "expected a chldren of child" 
+
+        | _ -> failwith "expected a child and children cycle"
+
+    let [<Test>] ``Recursive record collection collection is detected correctly``() =
+        let json = """{
+              "id": 1234,
+              "t" : { "firstname":"clem" },
+              "children": [ [ {
+                "id": 1234,
+                "t" : { "firstname":"clem" }, 
+                "children": [ [ {
+                  "id": 1234,
+                  "t" : { "firstname":"clem" },
+                  "children": []
+                } ] ]
+              } ] ]
+            }""" |> JsonValue.Parse
+
+        let input =
+            json
+            |> JsonInference.inferType true System.Globalization.CultureInfo.InvariantCulture "child"
+
+        let actual = input |> InferedType.flatten "child"
+
+        let idField = { Name="id"; Type = InferedType.Primitive(typeof<int>, None, false) }
+        let tType = InferedType.Record(Some "t", [{ Name = "firstname"; Type = InferedType.Primitive(typeof<string>, None, false) }], false)
+        let tField = { Name="t"; Type=tType }
+
+        match actual with
+        | InferedType.Record(Some "child", idField1::tField1::{ Name="children"; Type=InferedType.Collection(_, collection) }::_, false) as child1 ->
+            idField |> should equal idField1
+            tField |> should equal tField1
+
+            match collection |> Map.toList |> List.map (snd >> snd) |> List.exactlyOne with
+            | InferedType.Collection(_, types) as c -> 
+
+                let child2 = types |> Map.fold (fun s _ -> snd >> function InferedType.Record(Some "child",_,_) as x -> x :: s | _ -> s) [] |> List.exactlyOne
+                child1 |> should equal child2
+
+                match child2 with
+                | InferedType.Record(Some "child", _::_::{ Name="children"; Type=c2 }::_, _) -> c |> should equal c2
+                | _ -> failwith "expected a chldren of child" 
+
             | _ -> failwith "expected a chldren of child" 
 
         | _ -> failwith "expected a child and children cycle"
