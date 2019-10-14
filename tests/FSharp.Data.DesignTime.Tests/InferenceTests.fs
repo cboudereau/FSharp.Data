@@ -20,51 +20,30 @@ open ProviderImplementation
 
 module InferedType =
     
-    let foldBack folder inferedType state =
+    let fold folder state inferedType =
         let (|Visited|_|) processed x =
             processed
             |> List.contains x
             |> fun y -> if y then Some () else None
 
-        let rec foldBack folder inferedType (processed, state) =
+        let rec fold folder (processed, state) inferedType =
             match inferedType with
             | Visited processed -> processed, state
-            | InferedType.Record (_, fields, _) as r -> (r :: processed, folder r state) |> List.foldBack(fun x (p, s) -> foldBack folder x.Type (p, s)) fields
-            | InferedType.Collection (_, y) as x -> y |> Map.fold (fun (p, s) _ -> snd >> fun z -> foldBack folder z (p, s)) (x::processed, folder x state)
-            | InferedType.Heterogeneous m as x -> m |> Map.fold (fun (p, s) _ z -> foldBack folder z (p, s)) (x::processed, folder x state)
-            | InferedType.Json (y,_) as x -> foldBack folder y (x::processed, folder x state) 
+            | InferedType.Record (_, fields, _) as r -> (r :: processed, folder state r) |> List.foldBack(fun x (p, s) -> fold folder (p, s) x.Type) fields
+            | InferedType.Collection (_, y) as x -> y |> Map.fold (fun (p, s) _ -> snd >> fold folder (p, s)) (x::processed, folder state x)
+            | InferedType.Heterogeneous m as x -> m |> Map.fold (fun (p, s) _ -> fold folder (p, s)) (x::processed, folder state x)
+            | InferedType.Json (y,_) as x -> fold folder (x::processed, folder state x) y
             | InferedType.Null
             | InferedType.Top
-            | InferedType.Primitive (_,_,_) as t -> t :: processed, folder t state
+            | InferedType.Primitive (_,_,_) as t -> t :: processed, folder state t
 
-        foldBack folder inferedType ([],state)  |> snd 
+        fold folder ([],state) inferedType |> snd 
 
-    let flatten parentName x =
-        let rec makeRecursive roots = function
-            | InferedType.Record (Some name, _ , _) -> roots |> Map.find name
-            | InferedType.Heterogeneous m -> m |> Map.map(fun _ -> makeRecursive roots) |> InferedType.Heterogeneous
-            | InferedType.Collection(tags, types) -> InferedType.Collection(tags, types |> Map.map(fun _ (m,x) -> m, makeRecursive roots x))
-            | InferedType.Json (x, optional) -> InferedType.Json (makeRecursive roots x, optional)
-            | other -> other
+    let flatten x =
+        let roots =
+            let records x = fold (fun s x -> match x with InferedType.Record (Some name, _, _) as r -> (name, r) :: s | _ -> s) [] x
 
-        let roots parentName =
-            let types parentName inferedType =
-                foldBack (fun x (parentName, s) ->
-                    match x with
-                    | InferedType.Record (Some name, _, _) as r -> name, (name, r) :: s
-                    | InferedType.Collection (_, _)
-                    | InferedType.Record (None, _, _) 
-                    | InferedType.Heterogeneous _ 
-                    | InferedType.Json (_, _) as j -> parentName, (parentName, j) :: s 
-                    | InferedType.Null
-                    | InferedType.Top
-                    | InferedType.Primitive (_,_,_) -> (parentName, s)
-                ) inferedType (parentName, [])
-                |> snd
-
-            let records x = foldBack (fun x s -> match x with InferedType.Record (Some name, _, _) as r -> (name, r) :: s | _ -> s) x [] 
-
-            types parentName
+            records
             >> List.groupBy fst
             >> List.map (fun (name, possibleTypes) ->
                 match possibleTypes with
@@ -79,12 +58,21 @@ module InferedType =
 
                     let r = InferedType.Record(Some name, mergedFields, true)
 
-                    mergedFields |> List.iter (fun p -> match p.Type with InferedType.Record(Some n, _, _) when n = name -> p.Type <- r | _ -> ())
+                    mergedFields
+                    |> List.iter (fun p -> match p.Type with InferedType.Record(Some n, _, _) when n = name -> p.Type <- r | _ -> ())
 
-                    name, r.DropOptionality())
+                    name, r)
             >> Map.ofList
 
-        makeRecursive (roots parentName x) x
+
+        let rec makeRecursive roots = function
+            | InferedType.Record (Some name, _ , _) -> roots |> Map.find name
+            | InferedType.Heterogeneous m -> m |> Map.map(fun _ -> makeRecursive roots) |> InferedType.Heterogeneous
+            | InferedType.Collection(tags, types) -> InferedType.Collection(tags, types |> Map.map(fun _ (m,x) -> m, makeRecursive roots x))
+            | InferedType.Json (x, optional) -> InferedType.Json (makeRecursive roots x, optional)
+            | other -> other
+
+        makeRecursive (roots x) x |> fun x -> x.DropOptionality()
 
 module MakeRecursiveType =
     let [<Test>] ``Simple recursive record is detected correctly``() =
@@ -108,7 +96,7 @@ module MakeRecursiveType =
         let actual =
             json
             |> JsonInference.inferType true System.Globalization.CultureInfo.InvariantCulture "child"
-            |> InferedType.flatten "child"
+            |> InferedType.flatten
 
         let idField = { Name="id"; Type = InferedType.Primitive(typeof<int>, None, false) }
         let tType = InferedType.Record(Some "t", [{ Name = "firstname"; Type = InferedType.Primitive(typeof<string>, None, false) }], false)
@@ -145,7 +133,7 @@ module MakeRecursiveType =
             json
             |> JsonInference.inferType true System.Globalization.CultureInfo.InvariantCulture "child"
 
-        let actual = input |> InferedType.flatten "child"
+        let actual = input |> InferedType.flatten
 
         let idField = { Name="id"; Type = InferedType.Primitive(typeof<int>, None, false) }
         let tType = InferedType.Record(Some "t", [{ Name = "firstname"; Type = InferedType.Primitive(typeof<string>, None, false) }], false)
