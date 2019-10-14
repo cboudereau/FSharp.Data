@@ -39,41 +39,70 @@ module InferedType =
 
         fold folder ([],state) inferedType |> snd 
 
-    let flatten x =
-        let roots =
-            let records x = fold (fun s x -> match x with InferedType.Record (Some name, _, _) as r -> (name, r) :: s | _ -> s) [] x
+    let flatten rootName x =
+        let fakeProperty = { Name=rootName; Type=x }
+        let fakeRecord = InferedType.Record(None, [fakeProperty], false)
 
-            records
-            >> List.groupBy fst
-            >> List.map (fun (name, possibleTypes) ->
-                match possibleTypes with
-                | [h] -> h
-                | n ->
+        let fields = fold (fun s -> function InferedType.Record (_, p, _ ) -> List.append s p | _ -> s) [] fakeRecord
 
-                    let mergedFields =
-                        n
-                        |> List.fold (fun s -> snd >> function
-                            | InferedType.Record (_, fields, _) -> if s |> List.isEmpty then fields else StructuralInference.unionRecordTypes false s fields
-                            | _ -> s) []
+        let roots = 
+            fields
+            |> List.groupBy(fun p -> p.Name)
+            |> List.map(fun (name, ps) ->
+                let t =
+                    ps
+                    |> List.fold (fun s p ->
+                        let t = StructuralInference.subtypeInfered false s p.Type
+                        match t with
+                        | InferedType.Record (Some n1, fields, _) as r ->
+                            match fields |> List.choose(fun x -> match x.Type with InferedType.Record(Some n2, _, _) when n1 = n2 -> Some x | _ -> None) with
+                            | [] -> t
+                            | recFields ->
+                                let r = InferedType.Record(Some n1, fields, true)
+                                recFields |> List.iter(fun p -> p.Type <- r)
+                                r
 
-                    let r = InferedType.Record(Some name, mergedFields, true)
+                            
+                        | _ -> t
+                        
+                    ) InferedType.Top
+                (name, { Name=name; Type=t }) )
+            |> Map.ofList
 
-                    mergedFields
-                    |> List.iter (fun p -> match p.Type with InferedType.Record(Some n, _, _) when n = name -> p.Type <- r | _ -> ())
+        let mutable changed = true
 
-                    name, r)
-            >> Map.ofList
+        while changed do
+            changed <- 
+                roots
+                |> Map.fold(fun changed _ a ->
+                    match a.Type with
+                    | InferedType.Record(_, fields , _) ->
+                        fields
+                        |> List.fold (fun s p ->
+                            let candidate = roots |> Map.find p.Name |> fun x -> x.Type
+                            if candidate <> p.Type then
+                                p.Type <- candidate
+                                true
+                            else s || false
+                            ) changed
+                    | InferedType.Collection (order, types) ->
+                        let candidates =
+                            types
+                            |> Map.map (fun _ (m,x) ->
+                                match x with
+                                | InferedType.Record(Some name, _, _) -> m, (roots |> Map.find name |> fun p -> p.Type)
+                                | _ -> m,x)
+                        if candidates <> types then
+                            a.Type <- InferedType.Collection (order, candidates)
+                            true
+                        else changed || false
+                    | InferedType.Json (x, o) ->
+                        failwith "not yet implemented"
+                    | _ -> changed || false
+                ) false
 
-
-        let rec makeRecursive roots = function
-            | InferedType.Record (Some name, _ , _) -> roots |> Map.find name
-            | InferedType.Heterogeneous m -> m |> Map.map(fun _ -> makeRecursive roots) |> InferedType.Heterogeneous
-            | InferedType.Collection(tags, types) -> InferedType.Collection(tags, types |> Map.map(fun _ (m,x) -> m, makeRecursive roots x))
-            | InferedType.Json (x, optional) -> InferedType.Json (makeRecursive roots x, optional)
-            | other -> other
-
-        makeRecursive (roots x) x |> fun x -> x.DropOptionality()
-
+        roots |> Map.find rootName |> fun x -> x.Type.DropOptionality()
+        
 module MakeRecursiveType =
     let [<Test>] ``Simple recursive record is detected correctly``() =
         let json = """{
@@ -96,7 +125,7 @@ module MakeRecursiveType =
         let actual =
             json
             |> JsonInference.inferType true System.Globalization.CultureInfo.InvariantCulture "child"
-            |> InferedType.flatten
+            |> InferedType.flatten "child"
 
         let idField = { Name="id"; Type = InferedType.Primitive(typeof<int>, None, false) }
         let tType = InferedType.Record(Some "t", [{ Name = "firstname"; Type = InferedType.Primitive(typeof<string>, None, false) }], false)
@@ -133,14 +162,26 @@ module MakeRecursiveType =
             json
             |> JsonInference.inferType true System.Globalization.CultureInfo.InvariantCulture "child"
 
-        let actual = input |> InferedType.flatten
+        let actual = input |> InferedType.flatten "child"
 
         let idField = { Name="id"; Type = InferedType.Primitive(typeof<int>, None, false) }
         let tType = InferedType.Record(Some "t", [{ Name = "firstname"; Type = InferedType.Primitive(typeof<string>, None, false) }], false)
         let tField = { Name="t"; Type=tType }
 
-        //We cannot use the InferedType equality of 2 identical (not same reference) recursive structure instances.
-        actual |> should equal InferedType.Top
+        match actual with
+        | InferedType.Record(Some "child", idField1::tField1::{ Name="children"; Type=InferedType.Collection(_,types) as c }::_, false) as child1 ->
+            idField |> should equal idField1
+
+            tField |> should equal tField1
+
+            let child2 = types |> Map.fold (fun s _ -> snd >> function InferedType.Record(Some "child",_,_) as x -> x :: s | _ -> s) [] |> List.exactlyOne
+            child1 |> should equal child2
+
+            match child2 with
+            | InferedType.Record(Some "child", _::_::{ Name="children"; Type=c2 }::_, _) -> c |> should equal c2
+            | _ -> failwith "expected a chldren of child" 
+
+        | _ -> failwith "expected a child and children cycle"
 
 /// A collection containing just one type
 let SimpleCollection typ =
